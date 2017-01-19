@@ -1,0 +1,526 @@
+diff -Naur ts7250-ecos/packages/hal/arm/arm9/ts7250/current/cdl/hal_arm_arm9_ts7250.cdl rytis-ecos/packages/hal/arm/arm9/ts7250/current/cdl/hal_arm_arm9_ts7250.cdl
+--- ts7250-ecos/packages/hal/arm/arm9/ts7250/current/cdl/hal_arm_arm9_ts7250.cdl	2004-12-06 14:47:25.000000000 -0500
++++ rytis-ecos/packages/hal/arm/arm9/ts7250/current/cdl/hal_arm_arm9_ts7250.cdl	2005-09-07 19:25:00.000000000 -0400
+@@ -181,7 +181,7 @@
+             display "Global command prefix"
+             flavor  data
+             no_define
+-            default_value { "arm-9tdmi-elf" }
++            default_value { "arm-linux" }
+             description "
+                 This option specifies the command prefix used when
+                 invoking the build tools."
+@@ -370,6 +370,18 @@
+             This option lists the target's requirements for a valid Redboot
+             configuration."
+ 
++        cdl_component CYGPKG_REDBOOT_TS7250_EEPROM_RDWR {
++            display        "Provide the eeprom commands in RedBoot"
++            flavor         bool
++            default_value  1
++            parent         CYGPKG_REDBOOT_ARM_OPTIONS
++            #active_if      CYGBLD_BUILD_REDBOOT_WITH_EXEC
++            description    "
++                This option provides the eeprom_read and eeprom_write
++                commands."
++            compile -library=libextras.a redboot_eeprom.c
++        }
++
+         cdl_option CYGBLD_BUILD_REDBOOT_BIN {
+             display       "Build Redboot ROM binary image"
+             active_if     CYGBLD_BUILD_REDBOOT
+@@ -383,7 +395,7 @@
+                 <PREFIX>/bin/redboot.bin : <PREFIX>/bin/redboot.elf <PREFIX>/bin/image_hdr.o
+                 $(OBJCOPY) --strip-debug $< $(@:.bin=.img) 
+                 $(OBJCOPY) -O srec $< $(@:.bin=.srec)
+-                $(OBJCOPY) -O binary $< $@
++                $(OBJCOPY) -g -S -O binary $< $@
+             }
+         }
+     }
+diff -Naur ts7250-ecos/packages/hal/arm/arm9/ts7250/current/include/pkgconf/mlt_arm_arm9_ts7250_romram.ldi rytis-ecos/packages/hal/arm/arm9/ts7250/current/include/pkgconf/mlt_arm_arm9_ts7250_romram.ldi
+--- ts7250-ecos/packages/hal/arm/arm9/ts7250/current/include/pkgconf/mlt_arm_arm9_ts7250_romram.ldi	2004-11-10 18:49:36.000000000 -0500
++++ rytis-ecos/packages/hal/arm/arm9/ts7250/current/include/pkgconf/mlt_arm_arm9_ts7250_romram.ldi	2005-08-21 22:18:25.000000000 -0400
+@@ -16,8 +16,9 @@
+     SECTION_rodata1 (ram, ALIGN (0x4), FOLLOWING (.rodata))
+     SECTION_fixup (ram, ALIGN (0x4), FOLLOWING (.rodata1))
+     SECTION_gcc_except_table (ram, ALIGN (0x4), FOLLOWING (.fixup))
+-    SECTION_data (ram, ALIGN (0x4), FOLLOWING (.gcc_except_table))
+-    SECTION_bss (ram, ALIGN (0x4), LMA_EQ_VMA)
++    SECTION_got (ram, ALIGN (0x4), FOLLOWING (.gcc_except_table))
++    SECTION_data (ram, ALIGN (0x4), FOLLOWING (.got))
++    SECTION_bss (ram, ALIGN (0x4), FOLLOWING (.data))
+     _heap1 = ALIGN (0x8);
+     SECTIONS_END
+ }
+diff -Naur ts7250-ecos/packages/hal/arm/arm9/ts7250/current/include/plf_io.h rytis-ecos/packages/hal/arm/arm9/ts7250/current/include/plf_io.h
+--- ts7250-ecos/packages/hal/arm/arm9/ts7250/current/include/plf_io.h	2004-12-08 17:44:31.000000000 -0500
++++ rytis-ecos/packages/hal/arm/arm9/ts7250/current/include/plf_io.h	2005-09-08 18:19:17.000000000 -0400
+@@ -177,5 +177,16 @@
+ #define HAL_IDE_WRITE_CONTROL( __ctlr, __val )  \
+     HAL_WRITE_UINT16(TS7250_IDE_ALTSTATUS, (__val))
+ 
++//-----------------------------------------------------------------------------
++// EEPROM support
++
++#ifndef __ASSEMBLER__
++externC int
++hal_ts7250_eeprom_read(cyg_uint8 *buf, int offset, int len);
++
++externC int
++hal_ts7250_eeprom_write(cyg_uint8 *buf, int offset, int len);
++#endif
++
+ #endif // CYGONCE_HAL_PLF_IO_H
+ // EOF plf_io.h
+diff -Naur ts7250-ecos/packages/hal/arm/arm9/ts7250/current/src/redboot_eeprom.c rytis-ecos/packages/hal/arm/arm9/ts7250/current/src/redboot_eeprom.c
+--- ts7250-ecos/packages/hal/arm/arm9/ts7250/current/src/redboot_eeprom.c	1969-12-31 19:00:00.000000000 -0500
++++ rytis-ecos/packages/hal/arm/arm9/ts7250/current/src/redboot_eeprom.c	2005-09-07 22:56:09.000000000 -0400
+@@ -0,0 +1,161 @@
++//==========================================================================
++//
++//      redboot_eeprom.c
++//
++//      RedBoot command to read and write eeprom content of the
++//      TS7250
++//
++//==========================================================================
++//####ECOSGPLCOPYRIGHTBEGIN####
++// -------------------------------------------
++// This file is part of eCos, the Embedded Configurable Operating System.
++// Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003 Red Hat, Inc.
++// Copyright (C) 2003 Gary Thomas
++//
++// eCos is free software; you can redistribute it and/or modify it under
++// the terms of the GNU General Public License as published by the Free
++// Software Foundation; either version 2 or (at your option) any later version.
++//
++// eCos is distributed in the hope that it will be useful, but WITHOUT ANY
++// WARRANTY; without even the implied warranty of MERCHANTABILITY or
++// FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++// for more details.
++//
++// You should have received a copy of the GNU General Public License along
++// with eCos; if not, write to the Free Software Foundation, Inc.,
++// 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
++//
++// As a special exception, if other files instantiate templates or use macros
++// or inline functions from this file, or you compile this file and link it
++// with other works to produce a work based on this file, this file does not
++// by itself cause the resulting work to be covered by the GNU General Public
++// License. However the source code for this file must still be made available
++// in accordance with section (3) of the GNU General Public License.
++//
++// This exception does not invalidate any other reasons why a work based on
++// this file might be covered by the GNU General Public License.
++//
++// Alternative licenses for eCos may be arranged by contacting Red Hat, Inc.
++// at http://sources.redhat.com/ecos/ecos-license/
++// -------------------------------------------
++//####ECOSGPLCOPYRIGHTEND####
++//==========================================================================
++//#####DESCRIPTIONBEGIN####
++//
++// Author(s):    rcassebohm
++// Contributors: rcassebohm
++// Date:         2003-11-10
++// Purpose:      
++// Description:  
++//              
++// RedBoot command to read and write eeprom content of the
++//      TS7250
++// This code is part of RedBoot (tm).
++//
++//####DESCRIPTIONEND####
++//
++//==========================================================================
++
++#include <pkgconf/hal.h>
++#include <redboot.h>
++
++#include <cyg/hal/hal_io.h>
++
++// Exported CLI function(s)
++static void do_eeprom_read(int argc, char *argv[]);
++RedBoot_cmd("eeprom_read", 
++            "Read eeprom content", 
++            "-b <location> -o <eeprom offset> -l <length> [-d dump]",
++            do_eeprom_read
++    );
++
++static void do_eeprom_write(int argc, char *argv[]);
++RedBoot_cmd("eeprom_write", 
++            "Write eeprom content", 
++            "[-b <location>] -o <eeprom offset> [-l <length>]",
++            do_eeprom_write
++    );
++
++static void 
++do_eeprom_read(int argc, char *argv[])
++{
++    bool base_addr_set, offset_set, length_set, dump;
++    unsigned long base_addr, offset, length;
++    struct option_info opts[4];
++    cyg_uint8 *buf;
++    int ret;
++
++    init_opts(&opts[0], 'b', true, OPTION_ARG_TYPE_NUM, 
++              (void **)&base_addr, (bool *)&base_addr_set, "location");
++    init_opts(&opts[1], 'o', true, OPTION_ARG_TYPE_NUM, 
++              (void **)&offset, (bool *)&offset_set, "eeprom offset");
++    init_opts(&opts[2], 'l', true, OPTION_ARG_TYPE_NUM, 
++              (void **)&length, (bool *)&length_set, "length");
++    init_opts(&opts[3], 'd', true, OPTION_ARG_TYPE_FLG, 
++              (void **)&dump, 0, "dump data");
++    if (!scan_opts(argc, argv, 1, opts, 4, 0, 0, "")) {
++        return;
++    }
++
++    if (!base_addr_set || !offset_set || !length_set)
++    {
++        diag_printf("usage: eeprom_read -b <location> -o <eeprom offset>"
++                " -l <length> [-d dump]\n");
++        return;
++    }
++
++    buf = (cyg_uint8 *)base_addr;
++    ret = hal_ts7250_eeprom_read(buf, offset, length);
++    if (ret < 0)
++    {
++        diag_printf("Error while trying to read eeprom content\n");
++        return;
++    }
++ 
++    diag_printf("Read %d bytes of eeprom content\n", ret);
++
++    if (dump)
++        diag_dump_buf((void *)buf, ret);
++}
++
++static void 
++do_eeprom_write(int argc, char *argv[])
++{
++    bool base_addr_set, offset_set, length_set;
++    unsigned long base_addr, offset, length;
++    struct option_info opts[3];
++    cyg_uint8 *buf;
++    int ret;
++
++    base_addr = load_address;
++    length = load_address_end - load_address;
++
++    init_opts(&opts[0], 'b', true, OPTION_ARG_TYPE_NUM, 
++              (void **)&base_addr, (bool *)&base_addr_set, "location");
++    init_opts(&opts[1], 'o', true, OPTION_ARG_TYPE_NUM, 
++              (void **)&offset, (bool *)&offset_set, "eeprom offset");
++    init_opts(&opts[2], 'l', true, OPTION_ARG_TYPE_NUM, 
++              (void **)&length, (bool *)&length_set, "length");
++    if (!scan_opts(argc, argv, 1, opts, 3, 0, 0, "")) {
++        return;
++    }
++
++    if (!offset_set)
++    {
++        diag_printf("usage: eeprom_write [-b <location>] -o <eeprom offset>"
++                " [-l <length>]\n");
++        return;
++    }
++
++    buf = (cyg_uint8 *)base_addr;
++    ret = hal_ts7250_eeprom_write(buf, offset, length);
++    if (ret < 0)
++    {
++        diag_printf("Error while trying to write eeprom content\n");
++        return;
++    }
++ 
++    diag_printf("Written %d bytes of eeprom content\n", ret);
++}
++      
++// EOF redboot_eeprom.c
+diff -Naur ts7250-ecos/packages/hal/arm/arm9/ts7250/current/src/ts7250_misc.c rytis-ecos/packages/hal/arm/arm9/ts7250/current/src/ts7250_misc.c
+--- ts7250-ecos/packages/hal/arm/arm9/ts7250/current/src/ts7250_misc.c	2004-12-02 16:50:02.000000000 -0500
++++ rytis-ecos/packages/hal/arm/arm9/ts7250/current/src/ts7250_misc.c	2005-09-09 17:35:52.000000000 -0400
+@@ -378,6 +378,12 @@
+ plf_hardware_init(void)
+ {
+     hal_mmu_init();
++
++    // by default the eeprom chip select for the TS-7250's eeprom is enabled
++    // at power-up so the EP9302 can boot from the 2k on the eeprom. We must
++    // turn the chip select off, so it doesn't conflict wite user devices on
++    // the SPI bus.
++    HAL_WRITE_UINT16(0x23000000, 0x00); // disable eeprom CS
+ }
+ 
+ //-----------------------------------------------------------------------------
+@@ -612,3 +618,256 @@
+ 
+ 	return 0;
+ }
++
++//-------------------------------------------------
++void hal_ts7250_spi_flush(void)
++{
++    unsigned int status;
++
++     // wait till ssp isn't busy
++    HAL_READ_UINT32(0x808a000c, status);
++    while(status & 0x10) 	
++    {
++	HAL_READ_UINT32(0x808a000c, status);
++    }
++
++}
++
++//-------------------------------------------------
++void hal_ts7250_spi_enable(void)
++{
++    HAL_WRITE_UINT32(0x808a0004, 0x10);	// Enable ssp, Master, dissable ssp interupts, no-loopback
++}
++
++//-------------------------------------------------
++void hal_ts7250_spi_disable(void)
++{
++    HAL_WRITE_UINT32(0x808a0004, 0x00);	// Dissable ssp, Master, dissable ssp interupts, no-loopback
++}
++
++//-------------------------------------------------
++void hal_ts7250_spi_write_byte(unsigned int byte)
++{
++    HAL_WRITE_UINT32(0x808a0008, byte);
++}
++
++//-------------------------------------------------
++unsigned int hal_ts7250_spi_read_byte(void)
++{
++    unsigned int byte;
++
++    HAL_READ_UINT32(0x808a0008, byte);
++
++    return(byte);
++}
++  
++//-------------------------------------------------
++void hal_ts7250_spi_init(void)
++{
++    unsigned int byte;
++    unsigned int status;
++ 
++
++    HAL_WRITE_UINT16(0x23000000, 0x02); // enable eeprom CS
++
++    hal_ts7250_spi_enable(); 
++    hal_ts7250_spi_flush();
++ 
++    // wait till transmit and receive are empty
++    HAL_WRITE_UINT32(0x808a000c, status);
++    while((status & 0x5) != 0x01) 	
++    {
++	HAL_READ_UINT32(0x808a000c, status);
++    }
++
++    HAL_WRITE_UINT32(0x808a0000, 0xc7);	// set SPI 8 bit, SPH=1, SPO=1, Motorola style spi
++    HAL_WRITE_UINT32(0x808a0010, 0x02);	// set clock divisor to 2
++    
++    hal_ts7250_spi_disable();
++}
++
++//-------------------------------------------------
++void hal_ts7250_spi_deinit(void)
++{
++    HAL_WRITE_UINT16(0x23000000, 0x00); // disable eeprom CS
++}
++
++//-------------------------------------------------
++void hal_ts7250_eeprom_enable_write(void)
++{
++    hal_ts7250_spi_write_byte(0x06);	// send enable_write command to eeprom
++    hal_ts7250_spi_enable(); 
++    hal_ts7250_spi_flush();
++    hal_ts7250_spi_read_byte();      // read dumby byte from eeprom (pump out when we sent the command)
++    hal_ts7250_spi_disable();
++}
++
++//-------------------------------------------------
++void hal_ts7250_eeprom_disable_write(void)
++{
++    hal_ts7250_spi_write_byte(0x04);	// send disable_write command to eeprom
++    hal_ts7250_spi_enable(); 
++    hal_ts7250_spi_flush_spi();
++    hal_ts7250_spi_read_byte();      // read dumby byte from eeprom (pump out when we sent the command)
++    hal_ts7250_spi_disable();
++}
++
++//-------------------------------------------------
++unsigned int hal_ts7250_eeprom_read_status(void)
++{
++    unsigned int eeprom_status;
++
++    hal_ts7250_spi_write_byte(0x05);	// send read_status command to eeprom
++    hal_ts7250_spi_write_byte(0x00);	// send dumby word to eeprom to pump out the status byte
++  
++    hal_ts7250_spi_enable(); 
++ 
++    hal_ts7250_spi_flush();
++
++    hal_ts7250_spi_read_byte();	           // read dumby byte from eeprom (pump out when we sent the read_status command)
++    eeprom_status = hal_ts7250_spi_read_byte(); // read eeprom status
++
++    hal_ts7250_spi_disable();
++     
++    return(eeprom_status);
++}
++
++//-------------------------------------------------
++void hal_ts7250_eeprom_write_status(unsigned int eeprom_status)
++{
++    hal_ts7250_eeprom_enable_write();
++
++    hal_ts7250_spi_write_byte(0x01);			// send write_status command to eeprom
++    hal_ts7250_spi_write_byte(eeprom_status);	// send status byte
++  
++    hal_ts7250_spi_enable(); 
++ 
++    hal_ts7250_spi_flush();
++
++    hal_ts7250_spi_read_byte();	           // read dumby byte from eeprom (pump out when we sent the read_status command)
++    hal_ts7250_spi_read_byte();	           // read dumby byte from eeprom (pump out when we sent the read_status value)
++    
++    hal_ts7250_spi_disable();
++}
++
++//-------------------------------------------------
++void hal_ts7250_eeprom_flush( void )
++{
++    while((hal_ts7250_eeprom_read_status() & 0x01) == 0x01);   
++}
++
++//-------------------------------------------------
++unsigned int hal_ts7250_eeprom_read_byte( unsigned int address )
++{
++    // Note: subsequent reads can be issued at the same time (for a future version)
++
++    unsigned int data;
++
++    hal_ts7250_spi_write_byte(0x03);		 	// send read_byte command to eeprom
++    hal_ts7250_spi_write_byte((address>>8) & 0x00ff); 	// send upper byte of address
++    hal_ts7250_spi_write_byte(address & 0x00ff);	// send lower byte of address
++    hal_ts7250_spi_write_byte(0x00);			// send dumby word to eeprom to pump out the data byte
++    
++    hal_ts7250_spi_enable(); 
++ 
++    hal_ts7250_spi_flush();
++
++    hal_ts7250_spi_read_byte();	           // read dumby byte from eeprom (pump out when we sent the read_status command)
++    hal_ts7250_spi_read_byte();	           // read dumby byte from eeprom (pump out when we sent the read_status value)
++    hal_ts7250_spi_read_byte();	           // read dumby byte from eeprom (pump out when we sent the read_status value)
++    data = hal_ts7250_spi_read_byte(); 	   // read data
++     
++    hal_ts7250_spi_disable();
++
++    return(data);
++}
++
++//-------------------------------------------------
++void hal_ts7250_eeprom_write_byte( unsigned int address, unsigned int data )
++{
++    hal_ts7250_eeprom_enable_write();
++
++    hal_ts7250_spi_write_byte(0x02);		 	// send write_byte command to eeprom
++    hal_ts7250_spi_write_byte((address>>8) & 0x00ff); 	// send upper byte of address
++    hal_ts7250_spi_write_byte(address & 0x00ff);	// send lower byte of address
++    hal_ts7250_spi_write_byte(data);			// send data byte
++    
++    hal_ts7250_spi_enable(); 
++ 
++    hal_ts7250_spi_flush();
++
++    hal_ts7250_spi_read_byte();	           // read dumby byte from eeprom (pump out when we sent the read_status command)
++    hal_ts7250_spi_read_byte();	           // read dumby byte from eeprom (pump out when we sent the read_status value)
++    hal_ts7250_spi_read_byte();	           // read dumby byte from eeprom (pump out when we sent the read_status value)
++    hal_ts7250_spi_read_byte();	           // read dumby byte from eeprom (pump out when we sent the read_status value)
++     
++    hal_ts7250_spi_disable();
++
++    return(data);
++}
++
++
++#define TS7250_EEPROM_SIZE	2048
++
++//-------------------------------------------------
++int hal_ts7250_eeprom_read(cyg_uint8 *buf, int offset, int len)
++{
++    int i;
++
++    hal_ts7250_spi_init();
++
++    if (offset > TS7250_EEPROM_SIZE)
++        return -1;
++
++    if (len > (TS7250_EEPROM_SIZE - offset))
++        len = (TS7250_EEPROM_SIZE - offset);
++
++    for(i=0; i<len; i++)
++    {
++        buf[i] = hal_ts7250_eeprom_read_byte(offset+i);
++    }
++    
++    hal_ts7250_spi_deinit();
++
++    return len;
++
++}
++
++//----------------------------------------------------------------------
++//
++// EEPROM Support
++//
++
++int hal_ts7250_eeprom_write(cyg_uint8 *buf, int offset, int len)
++{
++    int i;
++
++    hal_ts7250_spi_init();
++
++    hal_ts7250_eeprom_flush();
++
++    hal_ts7250_eeprom_write_status(0); // unlock the eeprom
++    hal_ts7250_eeprom_flush();
++
++    if (offset > TS7250_EEPROM_SIZE)
++        return -1;
++
++    if (len > (TS7250_EEPROM_SIZE - offset))
++        len = (TS7250_EEPROM_SIZE - offset);
++
++    for(i=0; i<len; i++)
++    {
++        hal_ts7250_eeprom_write_byte(offset+i, buf[i]);
++        hal_ts7250_eeprom_flush();
++    }
++
++    hal_ts7250_eeprom_write_status(0x1c); // lock the eeprom
++    hal_ts7250_eeprom_flush();
++    
++    hal_ts7250_spi_deinit();
++
++    return len;
++
++}
++
++
+diff -Naur ts7250-ecos/packages/redboot/current/src/main.c rytis-ecos/packages/redboot/current/src/main.c
+--- ts7250-ecos/packages/redboot/current/src/main.c	2004-09-01 17:21:30.000000000 -0400
++++ rytis-ecos/packages/redboot/current/src/main.c	2005-08-31 13:58:50.000000000 -0400
+@@ -334,6 +363,9 @@
+       script = CYGDAT_REDBOOT_DEFAULT_BOOT_SCRIPT;
+     }
+ # endif
++
++	script = (unsigned char *)0;  // Disable script Rytis
++
+     if (script) {
+         // Give the guy a chance to abort any boot script
+         unsigned char *hold_script = script;
