@@ -14,4 +14,6 @@ git add redboot_ts7250_eeprom.diff
 git add serial_blaster.c
 git add ts7250-bootrom.S
 git add ts7250-preboot.S
+git add setARMpath.sh
 git status
+
