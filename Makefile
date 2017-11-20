@@ -1,8 +1,6 @@
-#
-# 
-#
-#
-
+GNU = $(CROSS_COMPILE)
+objcopy = $(GNU)bin/arm-linux-objcopy
+objdump = $(GNU)bin/arm-linux-objdump
 
 all: serial_blaster.o boot-dissassemble.S boot2-dissassemble.S
 	gcc -g -o serial_blaster serial_blaster.o
@@ -11,22 +9,22 @@ serial_blaster.o: serial_blaster.c
 	gcc -g -c -o serial_blaster.o serial_blaster.c
 
 boot-dissassemble.S: boot.bin
-	arm-linux-objdump -b binary -m arm7tdmi -z --adjust-vma=0x80014000 -D boot.bin > boot-dissassemble.S
+	$(objdump) -b binary -m arm7tdmi -z --adjust-vma=0x80014000 -D boot.bin > boot-dissassemble.S
 
 boot.bin: boot.elf
-	arm-linux-objcopy --output-target binary boot.elf boot.bin
+	$(objcopy) --output-target binary boot.elf boot.bin
 
 boot.elf: boot.S
-	arm-linux-gcc -mcpu=arm920t -Wall -Wl,-Ttext,0x80014000 -nostdlib -o boot.elf boot.S
+	$(CC) -mcpu=arm920t -Wall -Wl,-Ttext,0x80014000 -nostdlib -o boot.elf boot.S
 
 boot2-dissassemble.S: boot2.bin
-	arm-linux-objdump -b binary -m arm7tdmi -z --adjust-vma=0x300000 -D boot2.bin > boot2-dissassemble.S
+	$(objdump) -b binary -m arm7tdmi -z --adjust-vma=0x300000 -D boot2.bin > boot2-dissassemble.S
 
 boot2.bin: boot2.elf
-	arm-linux-objcopy --output-target binary boot2.elf boot2.bin
+	$(objcopy) --output-target binary boot2.elf boot2.bin
 
 boot2.elf: boot2.S
-	arm-linux-gcc -mcpu=arm920t -Wall -Wl,-Ttext,0x300000 -nostdlib -o boot2.elf boot2.S
+	$(CC) -mcpu=arm920t -Wall -Wl,-Ttext,0x300000 -nostdlib -o boot2.elf boot2.S
 
 clean:
 	-rm serial_blaster.o
